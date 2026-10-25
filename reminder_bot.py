@@ -1,8 +1,10 @@
 import os
 import sys
+import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.request import HTTPXRequest
 from telegram.ext import (
@@ -21,6 +23,25 @@ if not TOKEN:
     print("Error: TELEGRAM_BOT_TOKEN not found in .env file.")
     sys.exit(1)
 
+# --- Keep-Alive HTTP Server for Render ---
+async def health_check(request):
+    """Responds to external pings to keep Render awake."""
+    return web.Response(text="Bot is running and awake!")
+
+async def start_web_server():
+    """Binds to the port provided by Render (default 8080)."""
+    server = web.Application()
+    server.router.add_get("/", health_check)
+    server.router.add_get("/health", health_check)
+    runner = web.AppRunner(server)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Web server listening on port {port} for keep-alive pings...")
+
+# --- Bot Handlers ---
 def stop_chat_alarms(chat_id, context: ContextTypes.DEFAULT_TYPE) -> bool:
     current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     if not current_jobs:
@@ -28,6 +49,11 @@ def stop_chat_alarms(chat_id, context: ContextTypes.DEFAULT_TYPE) -> bool:
     for job in current_jobs:
         job.schedule_removal()
     return True
+
+async def keepalive_callback(context: ContextTypes.DEFAULT_TYPE):
+    """Logs to stdout every 10 minutes."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now_str}] [Keep-Alive] Bot is active. No sleep.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -78,12 +104,11 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def set_clock_aligned_job(chat_id, interval_seconds, context: ContextTypes.DEFAULT_TYPE):
     stop_chat_alarms(chat_id, context)
 
-    # Calculate delay until the next clean clock interval
     now = datetime.now()
-    if interval_seconds == 3600:  # Every hour (:00)
+    if interval_seconds == 3600:
         seconds_passed = (now.minute * 60) + now.second
         first_delay = 3600 - seconds_passed
-    elif interval_seconds == 1800:  # Every 30 mins (:00 and :30)
+    elif interval_seconds == 1800:
         seconds_passed = ((now.minute % 30) * 60) + now.second
         first_delay = 1800 - seconds_passed
     else:
@@ -149,6 +174,17 @@ async def custom_interval_handler(update: Update, context: ContextTypes.DEFAULT_
     )
     await update.message.reply_text(f"Alarm set! You will be pinged every {mins} minute(s) from now.")
 
+async def post_init(application):
+    """Sets up the 10-minute console logging loop once the bot starts."""
+    application.job_queue.run_repeating(
+        keepalive_callback,
+        interval=600,   # Every 10 minutes (600 seconds)
+        first=10,       # First log after 10 seconds
+        name="render_keepalive"
+    )
+    # Start the lightweight HTTP server in the same event loop
+    await start_web_server()
+
 if __name__ == "__main__":
     request_config = HTTPXRequest(
         connect_timeout=30.0,
@@ -161,6 +197,7 @@ if __name__ == "__main__":
         ApplicationBuilder()
         .token(TOKEN)
         .request(request_config)
+        .post_init(post_init)
         .build()
     )
 
@@ -170,6 +207,5 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, custom_interval_handler))
 
-    print("Bot is running...")
-    # bootstrap_retries=-1 ensures it won't crash if your network drops for a few seconds
+    print("Bot is starting...")
     app.run_polling(bootstrap_retries=-1, timeout=30)
