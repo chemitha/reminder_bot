@@ -28,7 +28,9 @@ DEFAULT_TZ_NAME = "Asia/Colombo"
 
 # --- Keep-Alive HTTP Server for Render ---
 async def health_check(request):
-    return web.Response(text="Bot is running and awake!")
+    now_str = datetime.now(ZoneInfo(DEFAULT_TZ_NAME)).strftime("%Y-%m-%d %I:%M:%S %p")
+    print(f"[{now_str}] [Keep-Alive Ping] Received request from {request.remote}", flush=True)
+    return web.Response(status=204)
 
 async def start_web_server():
     server = web.Application()
@@ -40,7 +42,7 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Web server listening on port {port} for keep-alive pings...")
+    print(f"Web server listening on port {port} for keep-alive pings...", flush=True)
 
 # --- Helper Functions ---
 def get_user_tz(context: ContextTypes.DEFAULT_TYPE) -> ZoneInfo:
@@ -57,10 +59,6 @@ def stop_chat_alarms(chat_id, context: ContextTypes.DEFAULT_TYPE) -> bool:
     for job in current_jobs:
         job.schedule_removal()
     return True
-
-async def keepalive_callback(context: ContextTypes.DEFAULT_TYPE):
-    now_str = datetime.now(ZoneInfo(DEFAULT_TZ_NAME)).strftime("%Y-%m-%d %I:%M:%S %p")
-    print(f"[{now_str}] [Keep-Alive] Bot active.")
 
 # --- Keyboards ---
 def get_main_menu_keyboard():
@@ -332,12 +330,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def post_init(application):
-    application.job_queue.run_repeating(
-        keepalive_callback,
-        interval=600,
-        first=10,
-        name="render_keepalive",
-    )
     await start_web_server()
 
 if __name__ == "__main__":
